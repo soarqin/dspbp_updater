@@ -36,28 +36,62 @@ func checkError(err error, msg string) {
 }
 
 func main() {
-	infoStyle.Println("Starting to update repository...")
 	repo, err := git.PlainOpen(".")
-	if err != nil {
-		warnStyle.Println("Failed to open repository.")
-		printer := pterm.DefaultInteractiveSelect.
-			WithOptions([]string{"Yes", "No"}).
-			WithFilter(false).
-			WithDefaultText("Do you want to clone the repository? (Yes/No)")
-		selected, err := printer.Show()
-		checkError(err, "Failed to show interactive select")
-		if selected == "No" {
-			return
-		}
+	repoAvailable := err == nil
+	if !repoAvailable {
 		if _, err := os.Stat(".git"); err == nil {
 			if err := os.RemoveAll(".git"); err != nil {
-				warnStyle.Println("Error removing .git directory.")
+				checkError(err, "Failed to remove .git directory")
 				os.Exit(1)
 			}
 		}
-		checkError(err, "Failed to remove .git directory")
 		repo, err = git.PlainInit(".", false)
 		checkError(err, "Failed to initialize repository")
+	}
+	for {
+		var option1 string
+		if repoAvailable {
+			option1 = "Update Repository"
+		} else {
+			option1 = "Clone Repository"
+		}
+		printer := pterm.DefaultInteractiveSelect.
+			WithOptions([]string{option1, "Set mirror (for China Mainland users)"}).
+			WithFilter(false).
+			WithDefaultText("Choose an operation")
+		selected, err := printer.Show()
+		checkError(err, "Failed to show interactive select")
+		if selected == option1 {
+			break
+		}
+		printer2 := pterm.DefaultInteractiveSelect.
+			WithOptions([]string{"GitHub (no mirror)", "Codeberg"}).
+			WithFilter(false).
+			WithDefaultText("Select a mirror")
+		selected, err = printer2.Show()
+		checkError(err, "Failed to show interactive select")
+		switch selected {
+		case "GitHub (no mirror)":
+			cfg, err := repo.Config()
+			checkError(err, "Failed to get config")
+			delete(cfg.URLs, "https://codeberg.org/")
+			err = repo.SetConfig(cfg)
+			checkError(err, "Failed to set config")
+		case "Codeberg":
+			cfg, err := repo.Config()
+			checkError(err, "Failed to get config")
+			cfg.URLs["https://codeberg.org/"] = &config.URL{
+				Name:       "https://codeberg.org/",
+				InsteadOfs: []string{"https://github.com/"},
+			}
+			err = repo.SetConfig(cfg)
+			checkError(err, "Failed to set config")
+		}
+	}
+	if !repoAvailable {
+		infoStyle.Println("Starting to clone repository...")
+	} else {
+		infoStyle.Println("Starting to update repository...")
 	}
 	remote, err := repo.Remote(REMOTE_NAME)
 	if err != nil {
@@ -87,14 +121,16 @@ func main() {
 		Prune:    true,
 		Progress: os.Stdout,
 	})
-	if err != git.NoErrAlreadyUpToDate {
+	alreadyUpToDate := err == git.NoErrAlreadyUpToDate
+	if !alreadyUpToDate {
 		checkError(err, "Failed to fetch remote")
 	}
 	w, err := repo.Worktree()
 	checkError(err, "Failed to get worktree")
 	head, err := repo.Head()
 	if head == nil || head.Name().Short() != "main" {
-		if head != nil {
+		alreadyUpToDate = false
+		if head == nil {
 			infoStyle.Println("Repository is not on main branch.")
 			printer := pterm.DefaultInteractiveSelect.
 				WithOptions([]string{"Yes", "No"}).
@@ -153,18 +189,22 @@ func main() {
 		checkError(err, "Failed to reset worktree")
 		infoStyle.Println("Repository has been reset.")
 	}
-	err = w.Pull(&git.PullOptions{
-		RemoteName:   REMOTE_NAME,
-		Progress:     os.Stdout,
-		SingleBranch: true,
-	})
-	if err == git.NoErrAlreadyUpToDate {
-		infoStyle.Println("Repository is already up to date.")
-		waitForKeyInput()
-		return
+	if !alreadyUpToDate {
+		err = w.Pull(&git.PullOptions{
+			RemoteName:   REMOTE_NAME,
+			Progress:     os.Stdout,
+			SingleBranch: true,
+		})
+		if err == git.NoErrAlreadyUpToDate {
+			infoStyle.Println("Repository is already up to date.")
+			waitForKeyInput()
+			return
+		} else {
+			checkError(err, "Failed to pull repository")
+		}
+		infoStyle.Println("Repository has been pulled and updated.")
 	} else {
-		checkError(err, "Failed to pull repository")
+		infoStyle.Println("Repository is already up to date.")
 	}
-	infoStyle.Println("Repository has been pulled and updated.")
 	waitForKeyInput()
 }
