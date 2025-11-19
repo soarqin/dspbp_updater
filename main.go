@@ -13,6 +13,7 @@ import (
 
 const (
 	REMOTE_NAME = "origin"
+	BRANCH_NAME = "main"
 	REPO_URL    = "https://github.com/DSPBluePrints/FactoryBluePrints.git"
 )
 
@@ -48,6 +49,7 @@ func main() {
 		repo, err = git.PlainInit(".", false)
 		checkError(err, "Failed to initialize repository")
 	}
+	needReopen := false
 	for {
 		var option1 string
 		if repoAvailable {
@@ -77,6 +79,7 @@ func main() {
 			delete(cfg.URLs, "https://codeberg.org/")
 			err = repo.SetConfig(cfg)
 			checkError(err, "Failed to set config")
+			needReopen = true
 		case "Codeberg":
 			cfg, err := repo.Config()
 			checkError(err, "Failed to get config")
@@ -86,6 +89,7 @@ func main() {
 			}
 			err = repo.SetConfig(cfg)
 			checkError(err, "Failed to set config")
+			needReopen = true
 		}
 	}
 	if !repoAvailable {
@@ -113,6 +117,14 @@ func main() {
 			err = repo.SetConfig(cfg)
 			checkError(err, "Failed to set config")
 		}
+		needReopen = true
+	}
+	if needReopen {
+		// Reopen repository to apply insteadOf fields to remote URLs
+		repo, err = git.PlainOpen(".")
+		checkError(err, "Failed to open repository")
+		remote, err = repo.Remote(REMOTE_NAME)
+		checkError(err, "Failed to get remote")
 	}
 	err = remote.Fetch(&git.FetchOptions{
 		RefSpecs: []config.RefSpec{
@@ -128,14 +140,13 @@ func main() {
 	w, err := repo.Worktree()
 	checkError(err, "Failed to get worktree")
 	head, err := repo.Head()
-	if head == nil || head.Name().Short() != "main" {
-		alreadyUpToDate = false
-		if head == nil {
-			infoStyle.Println("Repository is not on main branch.")
+	if head == nil || head.Name().Short() != BRANCH_NAME {
+		if head != nil {
+			infoStyle.Println(fmt.Sprintf("Repository is not on %s branch.", BRANCH_NAME))
 			printer := pterm.DefaultInteractiveSelect.
 				WithOptions([]string{"Yes", "No"}).
 				WithFilter(false).
-				WithDefaultText("Do you want to checkout to main branch? (Yes/No)")
+				WithDefaultText(fmt.Sprintf("Do you want to checkout to %s branch? (Yes/No)", BRANCH_NAME))
 			selected, err := printer.Show()
 			checkError(err, "Failed to show interactive select")
 			if selected == "No" {
@@ -144,35 +155,37 @@ func main() {
 		}
 		cfg, err := repo.Config()
 		checkError(err, "Failed to get config")
-		if _, ok := cfg.Branches["main"]; !ok {
-			remoteRef, err := repo.Reference(plumbing.NewRemoteReferenceName(REMOTE_NAME, "main"), true)
+		if _, ok := cfg.Branches[BRANCH_NAME]; !ok {
+			remoteRef, err := repo.Reference(plumbing.NewRemoteReferenceName(REMOTE_NAME, BRANCH_NAME), true)
 			checkError(err, "Failed to get remote reference")
-			localBranchRef := plumbing.NewBranchReferenceName("main")
+			localBranchRef := plumbing.NewBranchReferenceName(BRANCH_NAME)
 			ref := plumbing.NewHashReference(localBranchRef, remoteRef.Hash())
 			err = repo.Storer.SetReference(ref)
 			checkError(err, "Failed to set reference")
 			err = w.Checkout(&git.CheckoutOptions{
 				Branch: localBranchRef,
 			})
-			checkError(err, "Failed to checkout to main branch")
-			cfg.Branches["main"] = &config.Branch{
-				Name:   "main",
+			checkError(err, fmt.Sprintf("Failed to checkout to %s branch", BRANCH_NAME))
+			cfg.Branches[BRANCH_NAME] = &config.Branch{
+				Name:   BRANCH_NAME,
 				Remote: REMOTE_NAME,
-				Merge:  plumbing.ReferenceName("refs/heads/main"),
+				Merge:  plumbing.ReferenceName(fmt.Sprintf("refs/heads/%s", BRANCH_NAME)),
 			}
 			err = repo.SetConfig(cfg)
 			checkError(err, "Failed to set config")
 		} else {
 			err = w.Checkout(&git.CheckoutOptions{
-				Branch: plumbing.NewBranchReferenceName("main"),
+				Branch: plumbing.NewBranchReferenceName(BRANCH_NAME),
 			})
-			checkError(err, "Failed to checkout to main branch")
+			checkError(err, fmt.Sprintf("Failed to checkout to %s branch", BRANCH_NAME))
 		}
-		infoStyle.Println("Repository has been checked out to main branch.")
+		if head != nil {
+			infoStyle.Println(fmt.Sprintf("Repository has been checked out to %s branch.", BRANCH_NAME))
+		}
 	}
 	status, err := w.Status()
 	checkError(err, "Failed to get status")
-	if !status.IsClean() {
+	if !statusIsClean(&status) {
 		infoStyle.Println("Repository is not clean, please consider committing or stashing your changes first.")
 		printer := pterm.DefaultInteractiveSelect.
 			WithOptions([]string{"Yes", "No"}).
@@ -207,4 +220,16 @@ func main() {
 		infoStyle.Println("Repository is already up to date.")
 	}
 	waitForKeyInput()
+}
+
+func statusIsClean(s *git.Status) bool {
+	for name, status := range *s {
+		if name == "dspbp_updater.exe" {
+			continue
+		}
+		if status.Worktree != git.Unmodified || status.Staging != git.Unmodified {
+			return false
+		}
+	}
+	return true
 }
